@@ -14,6 +14,7 @@ const int MAX_ENEMIES = 70;
 const int PLAYER_MAX_HEALTH = 100;
 const int ENEMY_MAX_HEALTH = 100;
 const int GAME_OVER_TIMER = 5;
+const int MAX_INVENTORY_SLOTS = 6;
 
 // Структура для кнопок
 struct Button {
@@ -22,10 +23,31 @@ struct Button {
     bool hovered;
 };
 
+// Структура для компаньонов
+struct Companion {
+    int type;           // 1 - melee, 2 - range, 3 - mars, 4 - ice, 5 - fire, 6 - lightning
+    int starLevel;      // Уровень звезды (1-6)
+    float attackTimer;
+    std::string name;
+
+    Companion(int t, int stars) : type(t), starLevel(stars), attackTimer(0) {
+        // Устанавливаем имя в зависимости от типа
+        switch (type) {
+        case 1: name = "Warrior"; break;
+        case 2: name = "Archer"; break;
+        case 3: name = "Mars"; break;
+        case 4: name = "Ice Mage"; break;
+        case 5: name = "Fire Mage"; break;
+        case 6: name = "Lightning Mage"; break;
+        default: name = "Unknown";
+        }
+    }
+};
+
 // Структура для предметов инвентаря
 struct InventoryItem {
-    int type = 0; // 0 - пусто, 1 - melee companion, 2 - range companion, 3 - mars
-    int starLevel = 1; // Уровень звезды (1-6)
+    int type = 0;
+    int starLevel = 1;
     Rectangle slot = { 0, 0, 0, 0 };
     std::string description = "Empty Slot";
 };
@@ -36,6 +58,8 @@ struct Enemy {
     Vector2 velocity = { 0, 0 };
     bool active;
     float frozenTimer = 0;
+    float burnTimer = 0;
+    float stunTimer = 0;
     int health;
     int maxHealth;
 
@@ -48,15 +72,20 @@ struct Projectile {
     Vector2 velocity;
     bool active;
     bool isFreezing;
+    bool isBurning;
+    bool isElectrifying;
     bool isMarsSpear;
     bool isMarsWave;
     float size;
     int damage;
+    int companionType;
 
-    Projectile(Vector2 pos, Vector2 vel, bool freezing = false, int dmg = 0,
-        bool marsSpear = false, bool marsWave = false, float projectileSize = 20.0f)
+    Projectile(Vector2 pos, Vector2 vel, bool freezing = false, bool burning = false,
+        bool electrifying = false, int dmg = 0, bool marsSpear = false,
+        bool marsWave = false, float projectileSize = 20.0f, int compType = 0)
         : position(pos), velocity(vel), active(true), isFreezing(freezing),
-        damage(dmg), isMarsSpear(marsSpear), isMarsWave(marsWave), size(projectileSize) {}
+        isBurning(burning), isElectrifying(electrifying), damage(dmg),
+        isMarsSpear(marsSpear), isMarsWave(marsWave), size(projectileSize), companionType(compType) {}
 };
 
 // Структура для игрока
@@ -71,15 +100,10 @@ struct Player {
     float attackCooldown;
     int gold;
     int kills;
-    int meleeCompanions;
-    int rangeCompanions;
-    int marsCompanions;
-    int companionLevel; // Уровень улучшения компаньонов (1-6)
 
     Player() : position({ 0, 0 }), speed(120.0f),
         passiveAttackTimer(0), freezeCooldown(0), health(PLAYER_MAX_HEALTH), maxHealth(PLAYER_MAX_HEALTH),
-        attackCooldown(0), gold(0), kills(0), meleeCompanions(0), rangeCompanions(0),
-        marsCompanions(0), companionLevel(1) {}
+        attackCooldown(0), gold(0), kills(0) {}
 };
 
 // Структура GameState для управления состоянием игры
@@ -90,11 +114,9 @@ struct GameState {
     GameState() : mapSize({ 5000.0f, 5000.0f }), cameraOffset({ 0, 0 }) {}
 
     void UpdateCamera(Vector2 playerPosition) {
-        // Центрируем камеру на игроке, но ограничиваем смещением фона
         cameraOffset.x = playerPosition.x - SCREEN_WIDTH / 2;
         cameraOffset.y = playerPosition.y - SCREEN_HEIGHT / 2;
 
-        // Ограничиваем смещение камеры границами карты
         float minX = 0;
         float minY = 0;
         float maxX = mapSize.x - SCREEN_WIDTH;
@@ -142,6 +164,7 @@ private:
     std::vector<Enemy> enemies;
     std::vector<Projectile> projectiles;
     std::vector<InventoryItem> inventory;
+    std::vector<Companion> companions; // Все компаньоны хранятся здесь
 
     float enemySpawnTimer;
     float gameOverTimer;
@@ -157,11 +180,6 @@ private:
     int randomCompanionPriceGold;
     int randomCompanionPriceKills;
     int purchaseCount;
-
-    std::vector<float> meleeAttackTimers;
-    std::vector<float> rangeAttackTimers;
-    std::vector<float> marsAttackTimers;
-    float auraAttackTimer;
 
     std::vector<ShopItem> allShopItems;
     ActiveShopItems currentShop;
@@ -179,6 +197,9 @@ private:
     Texture2D meleeTexture;
     Texture2D rangeTexture;
     Texture2D marsTexture;
+    Texture2D iceTexture;
+    Texture2D fireTexture;
+    Texture2D lightningTexture;
     Texture2D backgroundTexture;
     bool texturesLoaded;
     Texture2D menuBackgroundTexture;
@@ -189,9 +210,8 @@ public:
         inGame(false), inSettings(false), musicVolume(0.5f),
         timeSinceLastSpawn(0), choosingWeapon(false), inShop(false),
         randomCompanionPriceGold(300), randomCompanionPriceKills(30),
-        purchaseCount(0), auraAttackTimer(0),
-        attackCooldownReduction(0), movementSpeedBonus(0), extraEnemiesPerSpawn(0),
-        damageBonus(0), pocketHeroUses(0), freeRefreshUses(0),
+        purchaseCount(0), attackCooldownReduction(0), movementSpeedBonus(0),
+        extraEnemiesPerSpawn(0), damageBonus(0), pocketHeroUses(0), freeRefreshUses(0),
         texturesLoaded(false), menuBackgroundLoaded(false) {
 
         player.position = { gamestate.mapSize.x / 2, gamestate.mapSize.y / 2 };
@@ -206,7 +226,6 @@ public:
     }
 
     void LoadTextures() {
-        // Загрузка текстур
         if (FileExists("inventory.png")) {
             inventoryTexture = LoadTexture("inventory.png");
         }
@@ -218,6 +237,15 @@ public:
         }
         if (FileExists("mars.png")) {
             marsTexture = LoadTexture("mars.png");
+        }
+        if (FileExists("ice.png")) {
+            iceTexture = LoadTexture("ice.png");
+        }
+        if (FileExists("fire.png")) {
+            fireTexture = LoadTexture("fire.png");
+        }
+        if (FileExists("lightning.png")) {
+            lightningTexture = LoadTexture("lightning.png");
         }
         if (FileExists("background.png")) {
             backgroundTexture = LoadTexture("background.png");
@@ -235,6 +263,9 @@ public:
             if (meleeTexture.id != 0) UnloadTexture(meleeTexture);
             if (rangeTexture.id != 0) UnloadTexture(rangeTexture);
             if (marsTexture.id != 0) UnloadTexture(marsTexture);
+            if (iceTexture.id != 0) UnloadTexture(iceTexture);
+            if (fireTexture.id != 0) UnloadTexture(fireTexture);
+            if (lightningTexture.id != 0) UnloadTexture(lightningTexture);
             if (backgroundTexture.id != 0) UnloadTexture(backgroundTexture);
             if (menuBackgroundLoaded) {
                 UnloadTexture(menuBackgroundTexture);
@@ -242,14 +273,55 @@ public:
         }
     }
 
+    // БАЗА ДАННЫХ КОМПАНЬОНОВ
+    struct CompanionData {
+        int type;
+        std::string name;
+        std::string description;
+        Color color;
+        float baseCooldown;
+        int baseDamage;
+        int targets;
+        std::string ability;
+    };
+
+    std::vector<CompanionData> companionDatabase = {
+        {1, "Warrior", "Melee fighter with area attacks", RED, 1.1f, 40, 5, "Cleaves multiple enemies"},
+        {2, "Archer", "Ranged attacker with freezing arrows", GREEN, 1.1f, 30, 3, "Freezes enemies on hit"},
+        {3, "Mars", "God of war with wave attacks", ORANGE, 3.0f, 60, 7, "Sends shockwaves in semicircle"},
+        {4, "Ice Mage", "Master of frost and cold", SKYBLUE, 2.0f, 35, 4, "Slows and damages groups"},
+        {5, "Fire Mage", "Wielder of destructive flames", Color{255, 69, 0, 255}, 1.5f, 45, 3, "Burns enemies over time"},
+        {6, "Lightning Mage", "Controller of electric energy", YELLOW, 2.5f, 50, 6, "Chains lightning between enemies"}
+    };
+
+    CompanionData GetCompanionData(int type) {
+        for (const auto& data : companionDatabase) {
+            if (data.type == type) return data;
+        }
+        return companionDatabase[0]; // Fallback
+    }
+
+    std::string GetCompanionDescription(int type, int starLevel) {
+        CompanionData data = GetCompanionData(type);
+        std::string starString = GetStarString(starLevel);
+        int damage = data.baseDamage * starLevel;
+        int targets = data.targets + (starLevel - 1);
+        float cooldown = data.baseCooldown / starLevel;
+
+        return data.name + " " + starString + "\n" +
+            "Damage: " + std::to_string(damage) + "\n" +
+            "Targets: " + std::to_string(targets) + "\n" +
+            "Cooldown: " + std::to_string(cooldown).substr(0, 3) + "s\n" +
+            "Ability: " + data.ability;
+    }
+
     void InitializeShopItems() {
         allShopItems.clear();
-
         allShopItems.push_back({ 1, "Moon Shard", "-2% Attack Cooldown\nStacks", 400, 0, true, 1 });
         allShopItems.push_back({ 2, "Boots of Travel", "+3% Movement Speed\nStacks", 400, 0, true, 1 });
         allShopItems.push_back({ 3, "Doom Heart", "+1 Enemy per Spawn\nStacks", 400, 0, true, 1 });
         allShopItems.push_back({ 4, "Power Crystal", "+2% Total Damage\nStacks", 400, 0, true, 1 });
-        allShopItems.push_back({ 5, "Pocket Heroes", "Random Companion\nTier 1-2", 0, 40, true, 2 });
+        allShopItems.push_back({ 5, "Pocket Heroes", "Random Companion\nAny star level", 0, 40, true, 2 });
         allShopItems.push_back({ 6, "Refresh Token", "Free Shop Refresh\n(0-6 uses)", 400, 0, true, 1 });
     }
 
@@ -281,20 +353,13 @@ public:
         int startX = (SCREEN_WIDTH - slotWidth * 3) / 2;
         int startY = SCREEN_HEIGHT - slotHeight * 2 - 20;
 
-        for (int i = 0; i < 3; i++) {
+        for (int i = 0; i < MAX_INVENTORY_SLOTS; i++) {
             InventoryItem item;
             item.type = 0;
             item.starLevel = 1;
-            item.slot = { (float)startX + i * slotWidth, (float)startY + slotHeight, (float)slotWidth, (float)slotHeight };
-            item.description = "Empty Slot";
-            inventory.push_back(item);
-        }
-
-        for (int i = 0; i < 3; i++) {
-            InventoryItem item;
-            item.type = 0;
-            item.starLevel = 1;
-            item.slot = { (float)startX + i * slotWidth, (float)startY, (float)slotWidth, (float)slotHeight };
+            int row = i / 3;
+            int col = i % 3;
+            item.slot = { (float)startX + col * slotWidth, (float)startY + row * slotHeight, (float)slotWidth, (float)slotHeight };
             item.description = "Empty Slot";
             inventory.push_back(item);
         }
@@ -303,39 +368,18 @@ public:
     }
 
     void UpdateInventoryDisplay() {
-        int totalCompanions = player.meleeCompanions + player.rangeCompanions + player.marsCompanions;
-
+        // Сбрасываем все слоты
         for (int i = 0; i < inventory.size(); i++) {
-            if (i < player.meleeCompanions) {
-                inventory[i].type = 1;
-                inventory[i].starLevel = player.companionLevel;
-                inventory[i].description = "Melee Companion " + GetStarString(player.companionLevel) +
-                    "\nAttack: " + std::to_string(5 * player.companionLevel) + " targets" +
-                    "\nDamage: " + std::to_string(40 * player.companionLevel) + " per target" +
-                    "\nRange: Close combat";
-            }
-            else if (i < player.meleeCompanions + player.rangeCompanions) {
-                inventory[i].type = 2;
-                inventory[i].starLevel = player.companionLevel;
-                inventory[i].description = "Range Companion " + GetStarString(player.companionLevel) +
-                    "\nManual: 1 target x " + std::to_string(40 * player.companionLevel) + " damage" +
-                    "\nAuto: " + std::to_string(3 * player.companionLevel) + " targets x " + std::to_string(30 * player.companionLevel) + " damage" +
-                    "\nSpecial: Freeze effect";
-            }
-            else if (i < player.meleeCompanions + player.rangeCompanions + player.marsCompanions) {
-                inventory[i].type = 3;
-                inventory[i].starLevel = player.companionLevel;
-                inventory[i].description = "Mars " + GetStarString(player.companionLevel) +
-                    "\nWave Attack: " + std::to_string(60 * player.companionLevel) + " damage" +
-                    "\n180 semicircle attack" +
-                    "\nAuto-attack every " + std::to_string(3.0f / player.companionLevel) + " seconds" +
-                    "\nAURA: " + std::to_string(10 * player.companionLevel) + " damage around player";
-            }
-            else {
-                inventory[i].type = 0;
-                inventory[i].starLevel = 1;
-                inventory[i].description = "Empty Slot";
-            }
+            inventory[i].type = 0;
+            inventory[i].starLevel = 1;
+            inventory[i].description = "Empty Slot";
+        }
+
+        // Заполняем слоты компаньонами
+        for (int i = 0; i < companions.size() && i < MAX_INVENTORY_SLOTS; i++) {
+            inventory[i].type = companions[i].type;
+            inventory[i].starLevel = companions[i].starLevel;
+            inventory[i].description = GetCompanionDescription(companions[i].type, companions[i].starLevel);
         }
     }
 
@@ -352,10 +396,7 @@ public:
         player.health = player.maxHealth;
         player.gold = 0;
         player.kills = 0;
-        player.meleeCompanions = 0;
-        player.rangeCompanions = 0;
-        player.marsCompanions = 0;
-        player.companionLevel = 1;
+        companions.clear();
         enemies.clear();
         projectiles.clear();
         gameOver = false;
@@ -368,11 +409,6 @@ public:
         purchaseCount = 0;
         randomCompanionPriceGold = 300;
         randomCompanionPriceKills = 30;
-
-        meleeAttackTimers.clear();
-        rangeAttackTimers.clear();
-        marsAttackTimers.clear();
-        auraAttackTimer = 0;
 
         attackCooldownReduction = 0;
         movementSpeedBonus = 0;
@@ -387,41 +423,44 @@ public:
     }
 
     int GetSelectedWeaponType() {
-        if (player.marsCompanions > 0) return 3;
-        if (player.rangeCompanions > 0) return 2;
-        if (player.meleeCompanions > 0) return 1;
-        return 0;
+        if (companions.empty()) return 0;
+
+        // Возвращаем тип первого компаньона для основной атаки
+        return companions[0].type;
     }
 
-    void UpdateWeaponChoice(Button& meleeButton, Button& rangeButton) {
+    void UpdateWeaponChoice(Button& meleeButton, Button& rangeButton, Button& magicButton) {
         Vector2 mousePos = GetMousePosition();
 
         meleeButton.hovered = CheckCollisionPointRec(mousePos, meleeButton.bounds);
         rangeButton.hovered = CheckCollisionPointRec(mousePos, rangeButton.bounds);
+        magicButton.hovered = CheckCollisionPointRec(mousePos, magicButton.bounds);
 
         if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) {
             if (meleeButton.hovered) {
-                player.meleeCompanions = 1;
-                meleeAttackTimers.push_back(0);
+                companions.push_back(Companion(1, 1)); // Warrior 1★
                 UpdateInventoryDisplay();
                 choosingWeapon = false;
             }
             if (rangeButton.hovered) {
-                player.rangeCompanions = 1;
-                rangeAttackTimers.push_back(0);
+                companions.push_back(Companion(2, 1)); // Archer 1★
+                UpdateInventoryDisplay();
+                choosingWeapon = false;
+            }
+            if (magicButton.hovered) {
+                companions.push_back(Companion(4, 1)); // Ice Mage 1★
                 UpdateInventoryDisplay();
                 choosingWeapon = false;
             }
         }
     }
 
-    void UpdateShop(Button& randomButton, Button& closeButton, Button& refreshButton, Button& upgradeButton) {
+    void UpdateShop(Button& randomButton, Button& closeButton, Button& refreshButton) {
         Vector2 mousePos = GetMousePosition();
 
         randomButton.hovered = CheckCollisionPointRec(mousePos, randomButton.bounds);
         closeButton.hovered = CheckCollisionPointRec(mousePos, closeButton.bounds);
         refreshButton.hovered = CheckCollisionPointRec(mousePos, refreshButton.bounds);
-        upgradeButton.hovered = CheckCollisionPointRec(mousePos, upgradeButton.bounds);
 
         if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) {
             Rectangle item1Bounds = { 200, 250, 200, 120 };
@@ -448,16 +487,10 @@ public:
                         player.kills -= randomCompanionPriceKills;
                     }
 
-                    int randomType = GetRandomValue(1, 2);
-
-                    if (randomType == 1) {
-                        player.meleeCompanions++;
-                        meleeAttackTimers.push_back(0);
-                    }
-                    else {
-                        player.rangeCompanions++;
-                        rangeAttackTimers.push_back(0);
-                    }
+                    // Случайный компаньон 1-2 звезды
+                    int randomType = GetRandomValue(1, 6);
+                    int randomStars = GetRandomValue(1, 2);
+                    companions.push_back(Companion(randomType, randomStars));
 
                     purchaseCount++;
                     randomCompanionPriceGold = 300 * (int)pow(2, purchaseCount);
@@ -475,15 +508,6 @@ public:
                     player.kills -= currentShop.manualRefreshCost;
                     currentShop.manualRefreshCost += 20;
                     RefreshShop();
-                }
-            }
-
-            if (upgradeButton.hovered && player.companionLevel < 6) {
-                int upgradeCost = player.companionLevel * 500;
-                if (player.gold >= upgradeCost) {
-                    player.gold -= upgradeCost;
-                    player.companionLevel++;
-                    UpdateInventoryDisplay();
                 }
             }
 
@@ -527,16 +551,9 @@ public:
             break;
         case 5:
         {
-            int randomType = GetRandomValue(1, 2);
-
-            if (randomType == 1) {
-                player.meleeCompanions++;
-                meleeAttackTimers.push_back(0);
-            }
-            else {
-                player.rangeCompanions++;
-                rangeAttackTimers.push_back(0);
-            }
+            int randomType = GetRandomValue(1, 6);
+            int randomStars = GetRandomValue(1, 3);
+            companions.push_back(Companion(randomType, randomStars));
             UpdateInventoryDisplay();
         }
         break;
@@ -547,43 +564,30 @@ public:
     }
 
     void MergeCompanions() {
-        int totalCompanions = player.meleeCompanions + player.rangeCompanions;
+        if (companions.size() >= 3) {
+            // Проверяем, есть ли 3 компаньона одинакового уровня звезд
+            std::vector<int> sameLevelIndices;
+            int targetLevel = companions[0].starLevel;
 
-        if (totalCompanions >= 3 && player.companionLevel == 1) {
-            int meleeToRemove = std::min(player.meleeCompanions, 2);
-            int rangeToRemove = 3 - meleeToRemove;
-
-            if (player.meleeCompanions >= meleeToRemove && player.rangeCompanions >= rangeToRemove) {
-                player.meleeCompanions -= meleeToRemove;
-                player.rangeCompanions -= rangeToRemove;
-                player.marsCompanions += 1;
-
-                if (meleeAttackTimers.size() >= meleeToRemove) {
-                    meleeAttackTimers.erase(meleeAttackTimers.begin(), meleeAttackTimers.begin() + meleeToRemove);
+            for (int i = 0; i < companions.size(); i++) {
+                if (companions[i].starLevel == targetLevel) {
+                    sameLevelIndices.push_back(i);
+                    if (sameLevelIndices.size() == 3) break;
                 }
-                if (rangeAttackTimers.size() >= rangeToRemove) {
-                    rangeAttackTimers.erase(rangeAttackTimers.begin(), rangeAttackTimers.begin() + rangeToRemove);
-                }
-                marsAttackTimers.push_back(0);
-
-                UpdateInventoryDisplay();
             }
-        }
-        else if (totalCompanions >= 3 && player.companionLevel > 1 && player.companionLevel < 6) {
-            int meleeToRemove = std::min(player.meleeCompanions, 2);
-            int rangeToRemove = 3 - meleeToRemove;
 
-            if (player.meleeCompanions >= meleeToRemove && player.rangeCompanions >= rangeToRemove) {
-                player.meleeCompanions -= meleeToRemove;
-                player.rangeCompanions -= rangeToRemove;
-                player.companionLevel++;
+            if (sameLevelIndices.size() == 3) {
+                // Удаляем трех компаньонов
+                for (int i = 2; i >= 0; i--) {
+                    companions.erase(companions.begin() + sameLevelIndices[i]);
+                }
 
-                if (meleeAttackTimers.size() >= meleeToRemove) {
-                    meleeAttackTimers.erase(meleeAttackTimers.begin(), meleeAttackTimers.begin() + meleeToRemove);
-                }
-                if (rangeAttackTimers.size() >= rangeToRemove) {
-                    rangeAttackTimers.erase(rangeAttackTimers.begin(), rangeAttackTimers.begin() + rangeToRemove);
-                }
+                // Добавляем нового компаньона более высокого уровня
+                int newStarLevel = targetLevel + 1;
+                if (newStarLevel > 6) newStarLevel = 6;
+
+                int randomType = GetRandomValue(1, 6);
+                companions.push_back(Companion(randomType, newStarLevel));
 
                 UpdateInventoryDisplay();
             }
@@ -656,12 +660,9 @@ public:
             player.attackCooldown -= deltaTime * (1.0f + attackCooldownReduction);
         }
 
-        for (auto& timer : meleeAttackTimers) timer += deltaTime;
-        for (auto& timer : rangeAttackTimers) timer += deltaTime;
-        for (auto& timer : marsAttackTimers) timer += deltaTime;
-
-        if (player.marsCompanions > 0) {
-            auraAttackTimer += deltaTime;
+        // Обновляем таймеры компаньонов
+        for (auto& companion : companions) {
+            companion.attackTimer += deltaTime;
         }
 
         if (IsKeyPressed(KEY_F)) {
@@ -677,68 +678,268 @@ public:
         CheckGameOverCondition(deltaTime);
         HandleAllCompanionAttacks();
         HandleWeaponAttack();
-        HandleMarsAuraAttack();
     }
 
     void HandleAllCompanionAttacks() {
-        float meleeCooldown = 1.1f / player.companionLevel;
-        float rangeCooldown = 1.1f / player.companionLevel;
-        float marsCooldown = 3.0f / player.companionLevel;
+        for (auto& companion : companions) {
+            CompanionData data = GetCompanionData(companion.type);
+            float cooldown = data.baseCooldown / companion.starLevel;
 
-        for (size_t i = 0; i < meleeAttackTimers.size(); i++) {
-            if (meleeAttackTimers[i] >= meleeCooldown) {
-                PerformMeleeAutoAttack();
-                meleeAttackTimers[i] = 0;
-            }
-        }
-
-        for (size_t i = 0; i < rangeAttackTimers.size(); i++) {
-            if (rangeAttackTimers[i] >= rangeCooldown) {
-                PerformRangeAutoAttack();
-                rangeAttackTimers[i] = 0;
-            }
-        }
-
-        for (size_t i = 0; i < marsAttackTimers.size(); i++) {
-            if (marsAttackTimers[i] >= marsCooldown) {
-                Vector2 mouseScreenPos = GetMousePosition();
-                Vector2 mouseWorldPos = {
-                    mouseScreenPos.x + gamestate.cameraOffset.x,
-                    mouseScreenPos.y + gamestate.cameraOffset.y
-                };
-                Vector2 attackDirection = {
-                    mouseWorldPos.x - player.position.x,
-                    mouseWorldPos.y - player.position.y
-                };
-                float length = sqrt(attackDirection.x * attackDirection.x + attackDirection.y * attackDirection.y);
-                if (length > 0) {
-                    attackDirection.x /= length;
-                    attackDirection.y /= length;
-                }
-                CreateMarsWaveAttack(attackDirection);
-                marsAttackTimers[i] = 0;
+            if (companion.attackTimer >= cooldown) {
+                PerformCompanionAttack(companion);
+                companion.attackTimer = 0;
             }
         }
     }
 
-    void HandleMarsAuraAttack() {
-        if (player.marsCompanions > 0 && auraAttackTimer >= (0.3f / player.companionLevel)) {
-            int auraDamage = 10 * player.companionLevel;
-            float auraRange = 150.0f + (player.companionLevel - 1) * 20.0f;
+    void PerformCompanionAttack(const Companion& companion) {
+        CompanionData data = GetCompanionData(companion.type);
+        int damage = data.baseDamage * companion.starLevel * (1.0f + damageBonus);
+        int targets = data.targets + (companion.starLevel - 1);
 
-            for (auto& enemy : enemies) {
-                if (!enemy.active) continue;
+        switch (companion.type) {
+        case 1: // Warrior - ближняя атака по нескольким целям
+            PerformWarriorAttack(damage, targets);
+            break;
+        case 2: // Archer - замораживающие стрелы
+            PerformArcherAttack(damage, targets);
+            break;
+        case 3: // Mars - волновые атаки
+            PerformMarsAttack(damage);
+            break;
+        case 4: // Ice Mage - ледяные сферы
+            PerformIceMageAttack(damage, targets);
+            break;
+        case 5: // Fire Mage - огненные шары
+            PerformFireMageAttack(damage, targets);
+            break;
+        case 6: // Lightning Mage - цепная молния
+            PerformLightningMageAttack(damage, targets);
+            break;
+        }
+    }
 
-                float distance = Vector2Distance(player.position, enemy.position);
-                if (distance < auraRange) {
-                    enemy.health -= auraDamage;
-                    if (enemy.health <= 0) {
-                        player.kills++;
-                        player.gold += GetRandomValue(6, 11);
+    void PerformWarriorAttack(int damage, int targets) {
+        std::vector<Enemy*> nearbyEnemies;
+        for (auto& enemy : enemies) {
+            if (!enemy.active) continue;
+            float distance = Vector2Distance(player.position, enemy.position);
+            if (distance < 100.0f) {
+                nearbyEnemies.push_back(&enemy);
+            }
+        }
+
+        std::sort(nearbyEnemies.begin(), nearbyEnemies.end(),
+            [this](Enemy* a, Enemy* b) {
+                return Vector2Distance(player.position, a->position) <
+                    Vector2Distance(player.position, b->position);
+            });
+
+        int targetsToAttack = std::min(targets, (int)nearbyEnemies.size());
+        for (int i = 0; i < targetsToAttack; i++) {
+            Enemy* target = nearbyEnemies[i];
+            target->health -= damage;
+            if (target->health <= 0) {
+                player.kills++;
+                player.gold += GetRandomValue(6, 11);
+            }
+        }
+    }
+
+    void PerformArcherAttack(int damage, int targets) {
+        std::vector<Enemy*> nearbyEnemies;
+        for (auto& enemy : enemies) {
+            if (!enemy.active) continue;
+            float distance = Vector2Distance(player.position, enemy.position);
+            if (distance < 250.0f) {
+                nearbyEnemies.push_back(&enemy);
+            }
+        }
+
+        std::sort(nearbyEnemies.begin(), nearbyEnemies.end(),
+            [this](Enemy* a, Enemy* b) {
+                return Vector2Distance(player.position, a->position) <
+                    Vector2Distance(player.position, b->position);
+            });
+
+        int targetsToAttack = std::min(targets, (int)nearbyEnemies.size());
+        for (int i = 0; i < targetsToAttack; i++) {
+            Enemy* target = nearbyEnemies[i];
+            Vector2 direction = {
+                target->position.x - player.position.x,
+                target->position.y - player.position.y
+            };
+
+            float length = sqrt(direction.x * direction.x + direction.y * direction.y);
+            if (length > 0) {
+                direction.x /= length;
+                direction.y /= length;
+            }
+
+            projectiles.emplace_back(player.position,
+                Vector2{ direction.x * 250.0f, direction.y * 250.0f },
+                true, false, false, damage, false, false, 20.0f, 2);
+        }
+    }
+
+    void PerformMarsAttack(int damage) {
+        // Волновая атака Mars
+        Vector2 mouseScreenPos = GetMousePosition();
+        Vector2 mouseWorldPos = {
+            mouseScreenPos.x + gamestate.cameraOffset.x,
+            mouseScreenPos.y + gamestate.cameraOffset.y
+        };
+        Vector2 attackDirection = {
+            mouseWorldPos.x - player.position.x,
+            mouseWorldPos.y - player.position.y
+        };
+
+        float length = sqrt(attackDirection.x * attackDirection.x + attackDirection.y * attackDirection.y);
+        if (length > 0) {
+            attackDirection.x /= length;
+            attackDirection.y /= length;
+        }
+
+        CreateMarsWaveAttack(attackDirection, damage);
+    }
+
+    void PerformIceMageAttack(int damage, int targets) {
+        // Ледяные сферы
+        std::vector<Enemy*> nearbyEnemies;
+        for (auto& enemy : enemies) {
+            if (!enemy.active) continue;
+            float distance = Vector2Distance(player.position, enemy.position);
+            if (distance < 200.0f) {
+                nearbyEnemies.push_back(&enemy);
+            }
+        }
+
+        std::sort(nearbyEnemies.begin(), nearbyEnemies.end(),
+            [this](Enemy* a, Enemy* b) {
+                return Vector2Distance(player.position, a->position) <
+                    Vector2Distance(player.position, b->position);
+            });
+
+        int targetsToAttack = std::min(targets, (int)nearbyEnemies.size());
+        for (int i = 0; i < targetsToAttack; i++) {
+            Enemy* target = nearbyEnemies[i];
+            Vector2 direction = {
+                target->position.x - player.position.x,
+                target->position.y - player.position.y
+            };
+
+            float length = sqrt(direction.x * direction.x + direction.y * direction.y);
+            if (length > 0) {
+                direction.x /= length;
+                direction.y /= length;
+            }
+
+            projectiles.emplace_back(player.position,
+                Vector2{ direction.x * 200.0f, direction.y * 200.0f },
+                true, false, false, damage, false, false, 25.0f, 4);
+        }
+    }
+
+    void PerformFireMageAttack(int damage, int targets) {
+        // Огненные шары
+        std::vector<Enemy*> nearbyEnemies;
+        for (auto& enemy : enemies) {
+            if (!enemy.active) continue;
+            float distance = Vector2Distance(player.position, enemy.position);
+            if (distance < 300.0f) {
+                nearbyEnemies.push_back(&enemy);
+            }
+        }
+
+        std::sort(nearbyEnemies.begin(), nearbyEnemies.end(),
+            [this](Enemy* a, Enemy* b) {
+                return Vector2Distance(player.position, a->position) <
+                    Vector2Distance(player.position, b->position);
+            });
+
+        int targetsToAttack = std::min(targets, (int)nearbyEnemies.size());
+        for (int i = 0; i < targetsToAttack; i++) {
+            Enemy* target = nearbyEnemies[i];
+            Vector2 direction = {
+                target->position.x - player.position.x,
+                target->position.y - player.position.y
+            };
+
+            float length = sqrt(direction.x * direction.x + direction.y * direction.y);
+            if (length > 0) {
+                direction.x /= length;
+                direction.y /= length;
+            }
+
+            projectiles.emplace_back(player.position,
+                Vector2{ direction.x * 180.0f, direction.y * 180.0f },
+                false, true, false, damage, false, false, 30.0f, 5);
+        }
+    }
+
+    void PerformLightningMageAttack(int damage, int targets) {
+        // Цепная молния
+        if (!enemies.empty()) {
+            Enemy* firstTarget = &enemies[GetRandomValue(0, enemies.size() - 1)];
+            std::vector<Enemy*> chainedTargets = { firstTarget };
+
+            // Находим дополнительные цели для цепной молнии
+            for (int i = 1; i < targets && i < enemies.size(); i++) {
+                Enemy* lastTarget = chainedTargets.back();
+                Enemy* closest = nullptr;
+                float minDist = 150.0f; // Максимальное расстояние для цепи
+
+                for (auto& enemy : enemies) {
+                    if (!enemy.active) continue;
+                    if (std::find(chainedTargets.begin(), chainedTargets.end(), &enemy) != chainedTargets.end()) continue;
+
+                    float distance = Vector2Distance(lastTarget->position, enemy.position);
+                    if (distance < minDist) {
+                        minDist = distance;
+                        closest = &enemy;
                     }
                 }
+
+                if (closest) {
+                    chainedTargets.push_back(closest);
+                }
+                else {
+                    break;
+                }
             }
-            auraAttackTimer = 0;
+
+            // Наносим урон всем целям
+            for (auto* target : chainedTargets) {
+                target->health -= damage;
+                if (target->health <= 0) {
+                    player.kills++;
+                    player.gold += GetRandomValue(6, 11);
+                }
+                target->stunTimer = 1.0f; // Оглушение
+            }
+        }
+    }
+
+    void CreateMarsWaveAttack(Vector2 direction, int damage) {
+        int numProjectiles = 7 + companions.size(); // Больше волн с большим количеством компаньонов
+        float spreadAngle = 180.0f * 3.14159f / 180.0f;
+
+        for (int i = 0; i < numProjectiles; i++) {
+            float angle = -spreadAngle / 2 + (spreadAngle / (numProjectiles - 1)) * i;
+
+            float cosA = cos(angle);
+            float sinA = sin(angle);
+
+            Vector2 projectileDirection = {
+                direction.x * cosA - direction.y * sinA,
+                direction.x * sinA + direction.y * cosA
+            };
+
+            projectiles.emplace_back(
+                player.position,
+                Vector2{ projectileDirection.x * 200.0f, projectileDirection.y * 200.0f },
+                false, false, false, damage, false, true, 40.0f, 3
+            );
         }
     }
 
@@ -793,40 +994,27 @@ public:
     }
 
     void UpdateEnemies(float deltaTime) {
-        for (size_t i = 0; i < enemies.size(); i++) {
-            if (!enemies[i].active) continue;
-
-            for (size_t j = i + 1; j < enemies.size(); j++) {
-                if (!enemies[j].active) continue;
-
-                float distance = Vector2Distance(enemies[i].position, enemies[j].position);
-                if (distance < 40.0f) {
-                    Vector2 direction = {
-                        enemies[i].position.x - enemies[j].position.x,
-                        enemies[i].position.y - enemies[j].position.y
-                    };
-
-                    float length = sqrt(direction.x * direction.x + direction.y * direction.y);
-                    if (length > 0) {
-                        direction.x /= length;
-                        direction.y /= length;
-                    }
-
-                    float pushForce = 5.0f;
-                    enemies[i].position.x += direction.x * pushForce;
-                    enemies[i].position.y += direction.y * pushForce;
-                    enemies[j].position.x -= direction.x * pushForce;
-                    enemies[j].position.y -= direction.y * pushForce;
-                }
-            }
-        }
-
         for (auto& enemy : enemies) {
             if (!enemy.active) continue;
 
+            // Обработка статусных эффектов
             if (enemy.frozenTimer > 0) {
                 enemy.frozenTimer -= deltaTime;
-                continue;
+                continue; // Замороженные враги не двигаются
+            }
+
+            if (enemy.burnTimer > 0) {
+                enemy.burnTimer -= deltaTime;
+                enemy.health -= 5; // Урон от горения
+                if (enemy.health <= 0) {
+                    player.kills++;
+                    player.gold += GetRandomValue(6, 11);
+                }
+            }
+
+            if (enemy.stunTimer > 0) {
+                enemy.stunTimer -= deltaTime;
+                continue; // Оглушенные враги не двигаются
             }
 
             Vector2 direction = {
@@ -862,16 +1050,22 @@ public:
                 float collisionDistance = projectile.isMarsWave ? 50.0f : 30.0f;
 
                 if (distance < collisionDistance) {
-                    int actualDamage = projectile.damage * (1.0f + damageBonus);
-                    enemy.health -= actualDamage;
+                    enemy.health -= projectile.damage;
 
                     if (enemy.health <= 0) {
                         player.kills++;
                         player.gold += GetRandomValue(6, 11);
                     }
 
+                    // Применяем статусные эффекты
                     if (projectile.isFreezing) {
                         enemy.frozenTimer = 3.0f;
+                    }
+                    if (projectile.isBurning) {
+                        enemy.burnTimer = 5.0f;
+                    }
+                    if (projectile.isElectrifying) {
+                        enemy.stunTimer = 2.0f;
                     }
 
                     if (!projectile.isMarsSpear && !projectile.isMarsWave) {
@@ -892,8 +1086,7 @@ public:
     }
 
     void HandleWeaponAttack() {
-        int weaponType = GetSelectedWeaponType();
-        if (weaponType == 0) return;
+        if (companions.empty()) return;
 
         if (IsMouseButtonPressed(MOUSE_RIGHT_BUTTON) && player.attackCooldown <= 0) {
             Vector2 mouseScreenPos = GetMousePosition();
@@ -902,174 +1095,10 @@ public:
                 mouseScreenPos.y + gamestate.cameraOffset.y
             };
 
-            if (weaponType == 1) {
-                Enemy* target = nullptr;
-                float minDist = 100.0f;
-
-                for (auto& enemy : enemies) {
-                    if (!enemy.active) continue;
-
-                    float distance = Vector2Distance(mouseWorldPos, enemy.position);
-                    if (distance < minDist) {
-                        minDist = distance;
-                        target = &enemy;
-                    }
-                }
-
-                if (target) {
-                    std::vector<Enemy*> targets = { target };
-
-                    for (auto& enemy : enemies) {
-                        if (!enemy.active || &enemy == target) continue;
-
-                        float distance = Vector2Distance(target->position, enemy.position);
-                        if (distance < 80.0f && targets.size() < (5 * player.companionLevel)) {
-                            targets.push_back(&enemy);
-                        }
-                    }
-
-                    for (auto* enemyTarget : targets) {
-                        int actualDamage = 40 * player.companionLevel * (1.0f + damageBonus);
-                        enemyTarget->health -= actualDamage;
-
-                        if (enemyTarget->health <= 0) {
-                            player.kills++;
-                            player.gold += GetRandomValue(6, 11);
-                        }
-                    }
-
-                    player.attackCooldown = 0.3f;
-                }
-            }
-            else if (weaponType == 2) {
-                Enemy* target = nullptr;
-                float minDist = 150.0f;
-
-                for (auto& enemy : enemies) {
-                    if (!enemy.active) continue;
-
-                    float distance = Vector2Distance(mouseWorldPos, enemy.position);
-                    if (distance < minDist) {
-                        minDist = distance;
-                        target = &enemy;
-                    }
-                }
-
-                if (target) {
-                    Vector2 direction = {
-                        target->position.x - player.position.x,
-                        target->position.y - player.position.y
-                    };
-
-                    float length = sqrt(direction.x * direction.x + direction.y * direction.y);
-                    if (length > 0) {
-                        direction.x /= length;
-                        direction.y /= length;
-                    }
-
-                    int actualDamage = 40 * player.companionLevel * (1.0f + damageBonus);
-                    projectiles.emplace_back(player.position,
-                        Vector2{ direction.x * 300.0f, direction.y * 300.0f }, true, actualDamage);
-
-                    player.attackCooldown = 0.3f;
-                }
-            }
-            else if (weaponType == 3) {
-                player.attackCooldown = 0.3f;
-            }
-        }
-    }
-
-    void PerformMeleeAutoAttack() {
-        std::vector<Enemy*> nearbyEnemies;
-
-        for (auto& enemy : enemies) {
-            if (!enemy.active) continue;
-
-            float distance = Vector2Distance(player.position, enemy.position);
-            if (distance < 100.0f) {
-                nearbyEnemies.push_back(&enemy);
-            }
-        }
-
-        std::sort(nearbyEnemies.begin(), nearbyEnemies.end(),
-            [this](Enemy* a, Enemy* b) {
-                return Vector2Distance(player.position, a->position) <
-                    Vector2Distance(player.position, b->position);
-            });
-
-        int targetsToAttack = std::min(5 * player.companionLevel, (int)nearbyEnemies.size());
-        for (int i = 0; i < targetsToAttack; i++) {
-            Enemy* target = nearbyEnemies[i];
-            int actualDamage = 40 * player.companionLevel * (1.0f + damageBonus);
-            target->health -= actualDamage;
-
-            if (target->health <= 0) {
-                player.kills++;
-                player.gold += GetRandomValue(6, 11);
-            }
-        }
-    }
-
-    void PerformRangeAutoAttack() {
-        std::vector<Enemy*> nearbyEnemies;
-
-        for (auto& enemy : enemies) {
-            if (!enemy.active) continue;
-
-            float distance = Vector2Distance(player.position, enemy.position);
-            if (distance < 250.0f) {
-                nearbyEnemies.push_back(&enemy);
-            }
-        }
-
-        std::sort(nearbyEnemies.begin(), nearbyEnemies.end(),
-            [this](Enemy* a, Enemy* b) {
-                return Vector2Distance(player.position, a->position) <
-                    Vector2Distance(player.position, b->position);
-            });
-
-        int targetsToAttack = std::min(3 * player.companionLevel, (int)nearbyEnemies.size());
-        for (int i = 0; i < targetsToAttack; i++) {
-            Enemy* target = nearbyEnemies[i];
-            Vector2 direction = {
-                target->position.x - player.position.x,
-                target->position.y - player.position.y
-            };
-
-            float length = sqrt(direction.x * direction.x + direction.y * direction.y);
-            if (length > 0) {
-                direction.x /= length;
-                direction.y /= length;
-            }
-
-            int actualDamage = 30 * player.companionLevel * (1.0f + damageBonus);
-            projectiles.emplace_back(player.position,
-                Vector2{ direction.x * 250.0f, direction.y * 250.0f }, true, actualDamage);
-        }
-    }
-
-    void CreateMarsWaveAttack(Vector2 direction) {
-        int numProjectiles = 7;
-        float spreadAngle = 180.0f * 3.14159f / 180.0f;
-
-        for (int i = 0; i < numProjectiles; i++) {
-            float angle = -spreadAngle / 2 + (spreadAngle / (numProjectiles - 1)) * i;
-
-            float cosA = cos(angle);
-            float sinA = sin(angle);
-
-            Vector2 projectileDirection = {
-                direction.x * cosA - direction.y * sinA,
-                direction.x * sinA + direction.y * cosA
-            };
-
-            int actualDamage = 60 * player.companionLevel * (1.0f + damageBonus);
-            projectiles.emplace_back(
-                player.position,
-                Vector2{ projectileDirection.x * 200.0f, projectileDirection.y * 200.0f },
-                false, actualDamage, false, true, 40.0f
-            );
+            // Используем способность основного компаньона
+            Companion& mainCompanion = companions[0];
+            PerformCompanionAttack(mainCompanion);
+            player.attackCooldown = 0.3f;
         }
     }
 
@@ -1114,7 +1143,7 @@ public:
         }
     }
 
-    void DrawWeaponChoice(Button& meleeButton, Button& rangeButton) {
+    void DrawWeaponChoice(Button& meleeButton, Button& rangeButton, Button& magicButton) {
         ClearBackground(BLACK);
 
         if (backgroundTexture.id != 0) {
@@ -1123,34 +1152,44 @@ public:
 
         DrawText("CHOOSE YOUR COMPANION", SCREEN_WIDTH / 2 - MeasureText("CHOOSE YOUR COMPANION", 40) / 2, 200, 40, WHITE);
 
+        // Кнопка Warrior
         DrawRectangleRec(meleeButton.bounds, meleeButton.hovered ? GRAY : DARKGRAY);
-
         if (meleeTexture.id != 0) {
             DrawTexture(meleeTexture, meleeButton.bounds.x + 10, meleeButton.bounds.y + 10, WHITE);
         }
         else {
-            DrawRectangle(meleeButton.bounds.x + 10, meleeButton.bounds.y + 10, 30, 30, VIOLET);
+            DrawRectangle(meleeButton.bounds.x + 10, meleeButton.bounds.y + 10, 30, 30, RED);
         }
-
         DrawText(meleeButton.text.c_str(),
             meleeButton.bounds.x + meleeButton.bounds.width / 2 - MeasureText(meleeButton.text.c_str(), 30) / 2,
             meleeButton.bounds.y + meleeButton.bounds.height / 2 - 15, 30, WHITE);
 
+        // Кнопка Archer
         DrawRectangleRec(rangeButton.bounds, rangeButton.hovered ? GRAY : DARKGRAY);
-
         if (rangeTexture.id != 0) {
             DrawTexture(rangeTexture, rangeButton.bounds.x + 10, rangeButton.bounds.y + 10, WHITE);
         }
         else {
-            DrawRectangle(rangeButton.bounds.x + 10, rangeButton.bounds.y + 10, 30, 30, YELLOW);
+            DrawRectangle(rangeButton.bounds.x + 10, rangeButton.bounds.y + 10, 30, 30, GREEN);
         }
-
         DrawText(rangeButton.text.c_str(),
             rangeButton.bounds.x + rangeButton.bounds.width / 2 - MeasureText(rangeButton.text.c_str(), 30) / 2,
             rangeButton.bounds.y + rangeButton.bounds.height / 2 - 15, 30, WHITE);
+
+        // Кнопка Ice Mage
+        DrawRectangleRec(magicButton.bounds, magicButton.hovered ? GRAY : DARKGRAY);
+        if (iceTexture.id != 0) {
+            DrawTexture(iceTexture, magicButton.bounds.x + 10, magicButton.bounds.y + 10, WHITE);
+        }
+        else {
+            DrawRectangle(magicButton.bounds.x + 10, magicButton.bounds.y + 10, 30, 30, SKYBLUE);
+        }
+        DrawText(magicButton.text.c_str(),
+            magicButton.bounds.x + magicButton.bounds.width / 2 - MeasureText(magicButton.text.c_str(), 30) / 2,
+            magicButton.bounds.y + magicButton.bounds.height / 2 - 15, 30, WHITE);
     }
 
-    void DrawShop(Button& randomButton, Button& closeButton, Button& refreshButton, Button& upgradeButton) {
+    void DrawShop(Button& randomButton, Button& closeButton, Button& refreshButton) {
         ClearBackground(BLACK);
 
         if (backgroundTexture.id != 0) {
@@ -1190,47 +1229,19 @@ public:
                 player.kills >= currentShop.manualRefreshCost ? GREEN : RED);
         }
 
-        DrawRectangleRec(upgradeButton.bounds, upgradeButton.hovered ? GRAY : DARKGRAY);
-        DrawText("UPGRADE", upgradeButton.bounds.x + upgradeButton.bounds.width / 2 - MeasureText("UPGRADE", 25) / 2,
-            upgradeButton.bounds.y + 10, 25, WHITE);
-        DrawText("COMPANIONS", upgradeButton.bounds.x + upgradeButton.bounds.width / 2 - MeasureText("COMPANIONS", 18) / 2,
-            upgradeButton.bounds.y + 40, 18, WHITE);
-
-        if (player.companionLevel < 6) {
-            int upgradeCost = player.companionLevel * 500;
-            std::string costText = "Cost: " + std::to_string(upgradeCost) + " gold";
-            DrawText(costText.c_str(), upgradeButton.bounds.x + 10, upgradeButton.bounds.y + 70, 15,
-                player.gold >= upgradeCost ? GREEN : RED);
-            std::string levelText = "Level: " + std::to_string(player.companionLevel) + " -> " + std::to_string(player.companionLevel + 1);
-            DrawText(levelText.c_str(), upgradeButton.bounds.x + 10, upgradeButton.bounds.y + 90, 15, WHITE);
-        }
-        else {
-            DrawText("MAX LEVEL", upgradeButton.bounds.x + 10, upgradeButton.bounds.y + 70, 15, GOLD);
-        }
-
         DrawRectangleRec(closeButton.bounds, closeButton.hovered ? GRAY : DARKGRAY);
         DrawText(closeButton.text.c_str(),
             closeButton.bounds.x + closeButton.bounds.width / 2 - MeasureText(closeButton.text.c_str(), 30) / 2,
             closeButton.bounds.y + closeButton.bounds.height / 2 - 15, 30, WHITE);
 
-        DrawText(("Melee Companions: " + std::to_string(player.meleeCompanions)).c_str(), 80, 250, 25, VIOLET);
-        DrawText(("Range Companions: " + std::to_string(player.rangeCompanions)).c_str(), 80, 285, 25, YELLOW);
-        DrawText(("Mars Companions: " + std::to_string(player.marsCompanions)).c_str(), 80, 320, 25, ORANGE);
-        std::string levelText = "Companion Level: " + GetStarString(player.companionLevel);
-        DrawText(levelText.c_str(), 80, 355, 25, WHITE);
-
-        DrawText("Press F to merge 3 companions", 80, 390, 20, WHITE);
-        DrawText("3x 1★ = 1 Mars or Level Up", 80, 415, 20, WHITE);
+        DrawText("Press F to merge 3 same-star companions", 80, 390, 20, WHITE);
+        // ИСПРАВЛЕННАЯ СТРОКА:
+        DrawText(("Companions: " + std::to_string(companions.size()) + "/" + std::to_string(MAX_INVENTORY_SLOTS)).c_str(), 80, 420, 20, WHITE);
 
         DrawText(("Attack CD Reduction: " + std::to_string((int)(attackCooldownReduction * 100)) + "%").c_str(), 800, 320, 20, BLUE);
         DrawText(("Movement Speed: +" + std::to_string((int)(movementSpeedBonus * 100)) + "%").c_str(), 800, 350, 20, BLUE);
         DrawText(("Extra Enemies: " + std::to_string(extraEnemiesPerSpawn)).c_str(), 800, 380, 20, BLUE);
         DrawText(("Damage Bonus: +" + std::to_string((int)(damageBonus * 100)) + "%").c_str(), 800, 410, 20, BLUE);
-
-        if (player.marsCompanions > 0) {
-            std::string auraText = "MARS AURA: " + std::to_string(10 * player.companionLevel) + " damage around player";
-            DrawText(auraText.c_str(), 800, 440, 20, ORANGE);
-        }
     }
 
     void DrawShopItem(const ShopItem& item, int x, int y) {
@@ -1314,63 +1325,51 @@ public:
     void DrawGameplay() {
         BeginDrawing();
 
-        // Очищаем экран
         ClearBackground(BLACK);
 
-        // Рисуем фон со смещением (параллакс эффект)
         if (backgroundTexture.id != 0) {
-            // Можно добавить параллакс эффект, смещая фон медленнее чем игрок
             float parallaxFactor = 0.5f;
             DrawTexture(backgroundTexture,
                 -gamestate.cameraOffset.x * parallaxFactor,
                 -gamestate.cameraOffset.y * parallaxFactor, WHITE);
         }
 
-        // Рисуем все игровые объекты с учетом смещения камеры
         {
-            // Аура Mars
-            if (player.marsCompanions > 0) {
-                Vector2 screenPos = gamestate.WorldToScreen(player.position);
-                float auraRange = 150.0f + (player.companionLevel - 1) * 20.0f;
-                DrawCircleLines((int)screenPos.x, (int)screenPos.y, auraRange, Fade(ORANGE, 0.3f));
-            }
-
-            // Враги
+            // Враги с эффектами
             for (const auto& enemy : enemies) {
                 if (!enemy.active) continue;
 
                 Vector2 screenPos = gamestate.WorldToScreen(enemy.position);
 
-                if (enemy.frozenTimer > 0) {
-                    DrawRectangle((int)screenPos.x - 20, (int)screenPos.y - 20, 40, 40, SKYBLUE);
-                }
-                else {
-                    DrawRectangle((int)screenPos.x - 20, (int)screenPos.y - 20, 40, 40, BLUE);
-                }
+                Color enemyColor = BLUE;
+                if (enemy.frozenTimer > 0) enemyColor = SKYBLUE;
+                else if (enemy.burnTimer > 0) enemyColor = Color{ 255, 69, 0, 255 };
+                else if (enemy.stunTimer > 0) enemyColor = YELLOW;
+
+                DrawRectangle((int)screenPos.x - 20, (int)screenPos.y - 20, 40, 40, enemyColor);
 
                 float healthPercent = (float)enemy.health / enemy.maxHealth;
                 DrawRectangle((int)screenPos.x - 20, (int)screenPos.y - 30, 40, 5, RED);
                 DrawRectangle((int)screenPos.x - 20, (int)screenPos.y - 30, (int)(40 * healthPercent), 5, GREEN);
             }
 
-            // Снаряды
+            // Снаряды с разными цветами
             for (const auto& projectile : projectiles) {
                 if (!projectile.active) continue;
 
                 Vector2 screenPos = gamestate.WorldToScreen(projectile.position);
 
+                Color projColor = WHITE;
+                if (projectile.isFreezing) projColor = SKYBLUE;
+                else if (projectile.isBurning) projColor = Color{ 255, 69, 0, 255 };
+                else if (projectile.isElectrifying) projColor = YELLOW;
+                else if (projectile.isMarsWave) projColor = ORANGE;
+
                 if (projectile.isMarsWave) {
-                    DrawCircle((int)screenPos.x, (int)screenPos.y, projectile.size / 2, ORANGE);
-                    DrawCircleLines((int)screenPos.x, (int)screenPos.y, projectile.size / 2, Color{ 255, 140, 0, 255 });
-                }
-                else if (projectile.isMarsSpear) {
-                    DrawRectangle((int)screenPos.x - 8, (int)screenPos.y - 8, 16, 16, ORANGE);
-                }
-                else if (projectile.isFreezing) {
-                    DrawRectangle((int)screenPos.x - 10, (int)screenPos.y - 10, 20, 20, SKYBLUE);
+                    DrawCircle((int)screenPos.x, (int)screenPos.y, projectile.size / 2, projColor);
                 }
                 else {
-                    DrawRectangle((int)screenPos.x - 10, (int)screenPos.y - 10, 20, 20, YELLOW);
+                    DrawRectangle((int)screenPos.x - 10, (int)screenPos.y - 10, 20, 20, projColor);
                 }
             }
 
@@ -1414,12 +1413,7 @@ public:
             int enemyX = minimapX + (int)(enemy.position.x * scaleX);
             int enemyY = minimapY + (int)(enemy.position.y * scaleY);
 
-            if (enemy.frozenTimer > 0) {
-                DrawRectangle(enemyX - 2, enemyY - 2, 4, 4, SKYBLUE);
-            }
-            else {
-                DrawRectangle(enemyX - 2, enemyY - 2, 4, 4, BLUE);
-            }
+            DrawRectangle(enemyX - 2, enemyY - 2, 4, 4, BLUE);
         }
 
         int playerX = minimapX + (int)(player.position.x * scaleX);
@@ -1440,6 +1434,7 @@ public:
         }
 
         for (const auto& item : inventory) {
+            // Рисуем иконки компаньонов
             if (item.type == 1 && meleeTexture.id != 0) {
                 DrawTexture(meleeTexture, item.slot.x + 10, item.slot.y + 10, WHITE);
             }
@@ -1449,14 +1444,38 @@ public:
             else if (item.type == 3 && marsTexture.id != 0) {
                 DrawTexture(marsTexture, item.slot.x + 10, item.slot.y + 10, WHITE);
             }
+            else if (item.type == 4 && iceTexture.id != 0) {
+                DrawTexture(iceTexture, item.slot.x + 10, item.slot.y + 10, WHITE);
+            }
+            else if (item.type == 5 && fireTexture.id != 0) {
+                DrawTexture(fireTexture, item.slot.x + 10, item.slot.y + 10, WHITE);
+            }
+            else if (item.type == 6 && lightningTexture.id != 0) {
+                DrawTexture(lightningTexture, item.slot.x + 10, item.slot.y + 10, WHITE);
+            }
             else if (item.type == 1) {
-                DrawRectangle(item.slot.x + 10, item.slot.y + 10, 30, 30, VIOLET);
+                DrawRectangle(item.slot.x + 10, item.slot.y + 10, 30, 30, RED);
             }
             else if (item.type == 2) {
-                DrawRectangle(item.slot.x + 10, item.slot.y + 10, 30, 30, YELLOW);
+                DrawRectangle(item.slot.x + 10, item.slot.y + 10, 30, 30, GREEN);
             }
             else if (item.type == 3) {
                 DrawRectangle(item.slot.x + 10, item.slot.y + 10, 30, 30, ORANGE);
+            }
+            else if (item.type == 4) {
+                DrawRectangle(item.slot.x + 10, item.slot.y + 10, 30, 30, SKYBLUE);
+            }
+            else if (item.type == 5) {
+                DrawRectangle(item.slot.x + 10, item.slot.y + 10, 30, 30, Color{ 255, 69, 0, 255 });
+            }
+            else if (item.type == 6) {
+                DrawRectangle(item.slot.x + 10, item.slot.y + 10, 30, 30, YELLOW);
+            }
+
+            // Рисуем уровень звезд
+            if (item.type != 0) {
+                std::string starText = GetStarString(item.starLevel);
+                DrawText(starText.c_str(), item.slot.x + 50, item.slot.y + 15, 20, GOLD);
             }
 
             if (CheckCollisionPointRec(mousePos, item.slot) && item.type != 0) {
@@ -1491,28 +1510,19 @@ public:
         std::string killsText = "Kills: " + std::to_string(player.kills);
         DrawText(killsText.c_str(), 20, startY + 90, 20, WHITE);
 
-        DrawText(("Melee: " + std::to_string(player.meleeCompanions)).c_str(), 20, startY + 120, 20, VIOLET);
-        DrawText(("Range: " + std::to_string(player.rangeCompanions)).c_str(), 20, startY + 150, 20, YELLOW);
-        DrawText(("Mars: " + std::to_string(player.marsCompanions)).c_str(), 20, startY + 180, 20, ORANGE);
-        std::string levelText = "Level: " + GetStarString(player.companionLevel);
-        DrawText(levelText.c_str(), 20, startY + 210, 20, WHITE);
+        // Убрано отображение количества компаньонов слева сверху
 
         if (enemies.size() > MAX_ENEMIES) {
             std::string timerText = "Time: " + std::to_string((int)gameOverTimer);
-            DrawText(timerText.c_str(), 20, startY + 240, 20, RED);
+            DrawText(timerText.c_str(), 20, startY + 120, 20, RED);
         }
 
-        DrawText("RMB: Attack with companion", 20, startY + 270, 20, WHITE);
-        DrawText("F: Merge 3 companions", 20, startY + 300, 20, WHITE);
+        DrawText("RMB: Companion ability", 20, startY + 150, 20, WHITE);
+        DrawText("F: Merge 3 same-star companions", 20, startY + 180, 20, WHITE);
 
-        DrawText(("CD Reduction: " + std::to_string((int)(attackCooldownReduction * 100)) + "%").c_str(), 20, startY + 330, 18, BLUE);
-        DrawText(("Speed: +" + std::to_string((int)(movementSpeedBonus * 100)) + "%").c_str(), 20, startY + 355, 18, BLUE);
-        DrawText(("Damage: +" + std::to_string((int)(damageBonus * 100)) + "%").c_str(), 20, startY + 380, 18, BLUE);
-
-        if (player.marsCompanions > 0) {
-            std::string auraText = "MARS AURA: " + std::to_string(10 * player.companionLevel) + " damage around player";
-            DrawText(auraText.c_str(), 20, startY + 405, 18, ORANGE);
-        }
+        DrawText(("CD Reduction: " + std::to_string((int)(attackCooldownReduction * 100)) + "%").c_str(), 20, startY + 210, 18, BLUE);
+        DrawText(("Speed: +" + std::to_string((int)(movementSpeedBonus * 100)) + "%").c_str(), 20, startY + 235, 18, BLUE);
+        DrawText(("Damage: +" + std::to_string((int)(damageBonus * 100)) + "%").c_str(), 20, startY + 260, 18, BLUE);
 
         if (gameOver) {
             DrawRectangle(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, Fade(BLACK, 0.5f));
@@ -1526,26 +1536,26 @@ public:
         Button settingsButton = { {SCREEN_WIDTH / 2 - 100, 420, 200, 50}, "SETTINGS", false };
         Button backButton = { {SCREEN_WIDTH / 2 - 100, 500, 200, 50}, "BACK", false };
 
-        Button meleeButton = { {SCREEN_WIDTH / 2 - 150, 300, 300, 80}, "MELEE COMPANION", false };
-        Button rangeButton = { {SCREEN_WIDTH / 2 - 150, 400, 300, 80}, "RANGE COMPANION", false };
+        Button meleeButton = { {SCREEN_WIDTH / 2 - 150, 300, 300, 80}, "WARRIOR", false };
+        Button rangeButton = { {SCREEN_WIDTH / 2 - 150, 400, 300, 80}, "ARCHER", false };
+        Button magicButton = { {SCREEN_WIDTH / 2 - 150, 500, 300, 80}, "ICE MAGE", false };
 
         Button randomButton = { {100, 500, 200, 120}, "RANDOM COMPANION", false };
         Button refreshButton = { {350, 500, 200, 120}, "REFRESH SHOP", false };
-        Button upgradeButton = { {600, 500, 200, 120}, "UPGRADE COMPANIONS", false };
         Button shopCloseButton = { {850, 500, 200, 50}, "CLOSE", false };
 
         while (!WindowShouldClose()) {
             if (inGame) {
                 if (choosingWeapon) {
-                    UpdateWeaponChoice(meleeButton, rangeButton);
+                    UpdateWeaponChoice(meleeButton, rangeButton, magicButton);
                     BeginDrawing();
-                    DrawWeaponChoice(meleeButton, rangeButton);
+                    DrawWeaponChoice(meleeButton, rangeButton, magicButton);
                     EndDrawing();
                 }
                 else if (inShop) {
-                    UpdateShop(randomButton, shopCloseButton, refreshButton, upgradeButton);
+                    UpdateShop(randomButton, shopCloseButton, refreshButton);
                     BeginDrawing();
-                    DrawShop(randomButton, shopCloseButton, refreshButton, upgradeButton);
+                    DrawShop(randomButton, shopCloseButton, refreshButton);
                     EndDrawing();
                 }
                 else {
